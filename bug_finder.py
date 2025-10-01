@@ -129,13 +129,15 @@ DEFAULT_AGG_INPUT_OVERHEAD_TOKENS: int = 500
 # Default prompts (core + per-language adapter)
 CORE_ANALYSIS_DIRECTIVE = textwrap.dedent(
     """
-    You are an expert static-analysis assistant for systems code. Your goal is to find real, impactful defects.
-    Focus on:
+    You are an expert code reviewer for systems code. Your goal is to find real,
+    impactful defects and bugs.
+    Focus on (among others):
     - Undefined behavior (UB), lifetime/ownership, buffer over/underflows, off-by-one, alignment issues
     - Concurrency issues: data races, atomics misuse, improper synchronization, deadlocks, lock ordering
-    - Memory: leaks, double free, invalid frees, UAF, dangling pointers, aliasing/strict-aliasing violations
+    - Memory: overflow, off-by-one errors, leaks, double free, invalid frees, UAF, dangling pointers, aliasing/strict-aliasing violations
     - Error handling: ignored error codes, exceptions, panic/abort risks, resource leaks on error paths
     - API misuse, reentrancy, TOCTOU, integer overflow/underflow, signedness issues, path traversal, etc.
+    - Any logic bugs you can find
 
     Guidance:
     - Be concrete. Cite evidence with line ranges and code excerpts.
