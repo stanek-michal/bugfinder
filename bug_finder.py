@@ -303,6 +303,7 @@ class ModelConfig:
     use_count_tokens_in_dry_run: bool = False  # Gemini only; if free
     max_output_tokens: Optional[int] = None  # optional cap
     thinking_budget: Optional[int] = None  # Gemini-specific; can be overridden via CLI
+    thinking_level: Optional[str] = None  # Gemini 3+: minimal|low|medium|high (Pro supports low|high)
     request_timeout_s: Optional[float] = None  # per-model override for request timeout
 
 
@@ -644,6 +645,7 @@ class BaseLLMClient:
         temperature: float,
         system_prompt: Optional[str] = None,
         thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         timeout_s: float = REQUEST_TIMEOUT_S,
     ) -> TrialResult:
@@ -670,6 +672,7 @@ class OpenAICompatClient(BaseLLMClient):
         temperature: float,
         system_prompt: Optional[str] = None,
         thinking_budget: Optional[int] = None,  # ignored
+        thinking_level: Optional[str] = None,  # ignored
         max_output_tokens: Optional[int] = None,
         timeout_s: float = REQUEST_TIMEOUT_S,
     ) -> TrialResult:
@@ -743,12 +746,33 @@ class GeminiClient(BaseLLMClient):
             raise RuntimeError("Gemini API key not found; set via model.api_key_env or GEMINI_API_KEY")
         self.client = google_genai.Client(api_key=api_key)
 
+    def _build_thinking_config(
+        self,
+        thinking_budget: Optional[int],
+        thinking_level: Optional[str],
+    ) -> Any:
+        """Return a ThinkingConfig appropriate for the model series.
+
+        Gemini 3: uses thinking_level (defaults to "high").
+        Gemini 2.5: uses thinking_budget (defaults to -1 for dynamic).
+        """
+        model = (self.cfg.model_name or "").lower()
+        is_gemini_3 = model.startswith("gemini-3")
+
+        if is_gemini_3:
+            level = (thinking_level or "").strip().lower() or "high"
+            return google_types.ThinkingConfig(thinking_level=level)
+
+        budget = thinking_budget if thinking_budget is not None else -1
+        return google_types.ThinkingConfig(thinking_budget=budget)
+
     async def generate(
         self,
         user_prompt: str,
         temperature: float,
         system_prompt: Optional[str] = None,
         thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         timeout_s: float = REQUEST_TIMEOUT_S,
     ) -> TrialResult:
@@ -759,8 +783,9 @@ class GeminiClient(BaseLLMClient):
 
         cfg_kwargs = dict(
             temperature=temperature,
-            thinking_config=google_types.ThinkingConfig(
-                thinking_budget=thinking_budget if thinking_budget is not None else -1
+            thinking_config=self._build_thinking_config(
+                thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
             ),
             **kwargs,
         )
@@ -1138,6 +1163,7 @@ def serialize_run_config(cfg: RunConfig) -> Dict[str, Any]:
             "use_count_tokens_in_dry_run": m.use_count_tokens_in_dry_run,
             "max_output_tokens": m.max_output_tokens,
             "thinking_budget": m.thinking_budget,
+            "thinking_level": m.thinking_level,
             "request_timeout_s": m.request_timeout_s,
         }
     return {
@@ -1163,11 +1189,11 @@ def parse_yaml_config(path: Path) -> RunConfig:
     models_cfg = {}
     models_data = data.get("models", {})
     if not models_data:
-        # Provide a reasonable default Gemini 2.5 Pro with zero pricing (user should set)
+        # Provide a reasonable default Gemini 3 Pro with zero pricing (user should set)
         models_data = {
             "gemini": {
                 "provider": "gemini",
-                "model_name": "gemini-2.5-pro",
+                "model_name": "gemini-3-pro-preview",
                 "context_window": 1_000_000,
                 "api_key_env": "GEMINI_API_KEY",
                 "pricing": {
@@ -1178,7 +1204,7 @@ def parse_yaml_config(path: Path) -> RunConfig:
                 },
                 "rate_limit": {"rpm": 60},
                 "concurrency": 2,
-                "thinking_budget": -1,
+                "thinking_level": "high",
                 "use_count_tokens_in_dry_run": False,
             }
         }
@@ -1222,6 +1248,7 @@ def parse_yaml_config(path: Path) -> RunConfig:
             use_count_tokens_in_dry_run=bool(m.get("use_count_tokens_in_dry_run", False)),
             max_output_tokens=int(m["max_output_tokens"]) if m.get("max_output_tokens") is not None else None,
             thinking_budget=int(m["thinking_budget"]) if m.get("thinking_budget") is not None else None,
+            thinking_level=str(m["thinking_level"]) if m.get("thinking_level") is not None else None,
             request_timeout_s=float(m["request_timeout_s"]) if m.get("request_timeout_s") is not None else None,
         )
         models_cfg[key] = mc
@@ -1488,12 +1515,13 @@ class Orchestrator:
         dry_run: bool = False,
         resume: bool = False,
         thinking_budget_override: Optional[int] = None,
+        thinking_level_override: Optional[str] = None,
     ) -> None:
         try:
             if dry_run:
                 await self._run_dry(files, thinking_budget_override)
             else:
-                await self._run_real(files, resume, thinking_budget_override)
+                await self._run_real(files, resume, thinking_budget_override, thinking_level_override)
         except Exception as e:
             self.logger.error(f"Fatal error: {e}\n{traceback.format_exc()}")
             raise
@@ -1593,7 +1621,13 @@ class Orchestrator:
             json.dump({"models": totals_by_model, "oversize": oversize_files_by_model}, f, indent=2)
         self.logger.info(f"Dry-run report written to {dry_path}")
 
-    async def _run_real(self, files: List[Path], resume: bool, thinking_budget_override: Optional[int]) -> None:
+    async def _run_real(
+        self,
+        files: List[Path],
+        resume: bool,
+        thinking_budget_override: Optional[int],
+        thinking_level_override: Optional[str],
+    ) -> None:
         # Install signal handlers
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1667,6 +1701,7 @@ class Orchestrator:
                             user_prompt,
                             temperature,
                             thinking_budget_override,
+                            thinking_level_override,
                         )
                     )
                     drafts_meta.append((mk, fut, idx + 1))
@@ -1709,6 +1744,7 @@ class Orchestrator:
         user_prompt: str,
         temperature: float,
         thinking_budget_override: Optional[int],
+        thinking_level_override: Optional[str],
     ) -> None:
         m = self.cfg.models[model_key]
         client = self.model_clients[model_key]
@@ -1732,6 +1768,11 @@ class Orchestrator:
             full_text = combine_system_and_user(system_prompt, user_prompt)
             # Thinking budget if Gemini
             thinking_budget = thinking_budget_override if (m.provider == "gemini" and thinking_budget_override is not None) else m.thinking_budget
+            thinking_level = (
+                thinking_level_override
+                if (m.provider == "gemini" and thinking_level_override is not None)
+                else m.thinking_level
+            )
 
             # Pick timeout: per-model override or global default
             timeout_val = (m.request_timeout_s if m.request_timeout_s is not None else REQUEST_TIMEOUT_S)
@@ -1740,6 +1781,7 @@ class Orchestrator:
                 system_prompt=system_prompt,
                 temperature=temperature,
                 thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
                 max_output_tokens=m.max_output_tokens,
                 timeout_s=timeout_val,
             )
@@ -1915,6 +1957,7 @@ class Orchestrator:
             await limiter.acquire()
             full_prompt = agg_prompt
             thinking_budget = m.thinking_budget
+            thinking_level = m.thinking_level
             try:
                 timeout_val = (m.request_timeout_s if m.request_timeout_s is not None else REQUEST_TIMEOUT_S)
                 result = await client.generate(
@@ -1922,6 +1965,7 @@ class Orchestrator:
                     system_prompt=system_prompt,
                     temperature=0.3,  # keep aggregator conservative
                     thinking_budget=thinking_budget,
+                    thinking_level=thinking_level,
                     max_output_tokens=m.max_output_tokens,
                     timeout_s=timeout_val,
                 )
@@ -2231,7 +2275,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--best-of", "-N", type=int, help="Best-of-N per file per model (default from config, typically 3)")
     p.add_argument("--dry-run", action="store_true", help="Estimate costs and tokens without running")
     p.add_argument("--resume", action="store_true", help="Resume an interrupted run (same process); in this version, this flag is a no-op placeholder")
-    p.add_argument("--thinking-budget", type=int, help="Gemini-only: override thinking budget per request (-1 dynamic, 0 off)")
+    p.add_argument("--thinking-budget", type=int, help="Gemini 2.5-only: override thinking budget per request (-1 dynamic; 0 off;)")
+    p.add_argument("--thinking-level", type=str, help="Gemini 3-only: override thinking level (e.g. low|high for 3 Pro; minimal|low|medium|high for 3 Flash)")
     p.add_argument("--max-usd", type=float, help="Stop scheduling new work once total estimated spend reaches this USD amount")
     p.add_argument("--concurrency", help="Per-model concurrency like modelA=3,modelB=5 (overrides config)")
     p.add_argument("--rpm", help="Per-model requests-per-minute like modelA=60,modelB=100 (overrides config)")
@@ -2349,7 +2394,13 @@ async def main_async(argv: Optional[List[str]] = None) -> int:
     orch = Orchestrator(cfg, logger)
     await orch.setup()
     try:
-        await orch.run(files, dry_run=args.dry_run, resume=args.resume, thinking_budget_override=args.thinking_budget)
+        await orch.run(
+            files,
+            dry_run=args.dry_run,
+            resume=args.resume,
+            thinking_budget_override=args.thinking_budget,
+            thinking_level_override=args.thinking_level,
+        )
     finally:
         with contextlib.suppress(Exception):
             await orch.close()

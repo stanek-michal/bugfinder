@@ -1,7 +1,7 @@
 models:
   gemini:
     provider: gemini
-    model_name: gemini-2.5-pro
+    model_name: gemini-3-pro-preview
     context_window: 1000000
     api_key_env: GEMINI_API_KEY
     # Pricing: USD per token (not per million). Tiered by input token count.
@@ -11,42 +11,63 @@ models:
       tiers:
         # Tier 1: up to 200k input tokens
         - upto_input_tokens: 200000
-          input_cost_per_token_usd: 0.00000125   # $1.25 / 1M
-          cached_input_cost_per_token_usd: 0.0000003125 # $0.3125 / 1M
-          output_cost_per_token_usd: 0.00001     # $10 / 1M
+          input_cost_per_token_usd: 0.000002     # $2 / 1M
+          cached_input_cost_per_token_usd: 0.0000002 # $0.2 / 1M
+          output_cost_per_token_usd: 0.000012    # $12 / 1M
         # Tier 2: above 200k input tokens
         - upto_input_tokens: 999999999
-          input_cost_per_token_usd: 0.0000025    # $2.50 / 1M
-          cached_input_cost_per_token_usd: 0.000000625 # $0.625 / 1M
-          output_cost_per_token_usd: 0.000015    # $15 / 1M
+          input_cost_per_token_usd: 0.000004     # $4 / 1M
+          cached_input_cost_per_token_usd: 0.0000004 # $0.4 / 1M
+          output_cost_per_token_usd: 0.000018    # $18 / 1M
     rate_limit:
       rpm: 5
     concurrency: 2
     # Explicit temperature schedule for best-of-N=2
     temperature_schedule: [1.0, 0.2]
-    thinking_budget: 32768
+#    thinking_budget: 32768
+    # Gemini 3: prefer thinking_level. Gemini 3 Pro supports low|high.
+    thinking_level: high
     use_count_tokens_in_dry_run: true
     request_timeout_s: 240  # how long you expect LLM response to take
-    # max_output_tokens: 1200  # uncomment to cap completions
-  gpt-oss:
-    provider: openai_compat  # Use 'openai_compat' for OpenAI or compatible APIs
-#    base_url: "http://localhost:4000"
-    base_url: "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
-#    model_name: gpt-oss-120b
-    model_name: openai.gpt-oss-120b-1:0
-    context_window: 128000
-    api_key_env: OPENAI_API_KEY # Environment variable for the API key
+    # max_output_tokens: 1200 # uncomment to cap completions
+  gemini_flash:
+    provider: gemini
+    model_name: gemini-3-flash-preview
+    context_window: 1000000
+    api_key_env: GEMINI_API_KEY
+    # Pricing: USD per token (not per million). Flat pricing for this model.
     pricing:
-      input_cost_per_token_usd: 0.00000015  # $0.15 / 1M
-      output_cost_per_token_usd: 0.0000006 # $0.6 / 1M
+      input_cost_per_token_usd: 0.0000005     # $0.50 / 1M
+      cached_input_cost_per_token_usd: 0.00000005 # $0.05 / 1M
+      output_cost_per_token_usd: 0.000003     # $3 / 1M
     rate_limit:
-      rpm: 2
-    concurrency: 1
-    request_timeout_s: 300
+      rpm: 5
+    concurrency: 2
+    # Gemini 3 Flash supports minimal|low|medium|high.
+    thinking_level: high
     # If temperature_schedule is omitted, a default is used based on 'best_of'
+    use_count_tokens_in_dry_run: true
+    request_timeout_s: 240
+    # max_output_tokens: 64000  # model max output; leaving unset keeps dry-run estimates realistic
+  # gpt-oss:
+  #   provider: openai_compat  # Use 'openai_compat' for OpenAI or compatible APIs
+  # #  base_url: "http://localhost:4000"
+  #   base_url: "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+  # #  model_name: gpt-oss-120b
+  #   model_name: openai.gpt-oss-120b-1:0
+  #   context_window: 128000
+  #   api_key_env: OPENAI_API_KEY # Environment variable for the API key
+  #   pricing:
+  #     input_cost_per_token_usd: 0.00000015  # $0.15 / 1M
+  #     output_cost_per_token_usd: 0.0000006 # $0.6 / 1M
+  #   rate_limit:
+  #     rpm: 2
+  #   concurrency: 1
+  #   request_timeout_s: 300
+  #   # If temperature_schedule is omitted, a default is used based on 'best_of'
 
-best_of: 3
-aggregator_model_key: gemini
+best_of: 1
+aggregator_model_key: gemini_flash
 
 include_globs:
   - "**/*.c"

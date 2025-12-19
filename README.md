@@ -51,7 +51,7 @@ export OPENAI_API_KEY=...
 
 ## Cost & runtime heads-up
 
-* With defaults (Gemini `gemini-2.5-pro` + Bedrock `gpt-oss-120b`, **2 tries/model**, max reasoning), expect **~$0.40–$1.00 per source file** depending on length.
+* With defaults (Gemini `gemini-3-pro` + Bedrock `gpt-oss-120b`, **2 tries/model**, max reasoning), expect **~$0.40–$1.00 per source file** depending on length.
 * The script can run **4–10 minutes per file**. Start with a small set of files. If running over SSH, use `tmux`/`screen` so it isn’t interrupted.
 * Use `--dry-run` first for a precise estimate; it accounts for **tiered pricing**, **cached tokens**, and context limits.
 * You can cap spend with `--max-usd`.
@@ -66,7 +66,7 @@ export OPENAI_API_KEY=...
 
 ## How it works (high-level)
 
-* Two backends run **the same prompt** on **the same file**; **multiple tries per model** surface different issues (LLMs are probabilistic).
+* Two backends run **the same prompt** on **the same file**; **multiple tries per model** surface different issues (LLMs are probabilistic). Backends can be different vendors or both Gemini.
 * An **aggregation** pass consolidates/derisks duplicates and sorts by severity; JSON is emitted for automation.
 
 ### Limitations
@@ -125,7 +125,8 @@ Common flags:
   * `--max-usd 10`
   * `--rpm gemini=5,gpt-oss=2`
   * `--concurrency gemini=2,gpt-oss=1`
-  * `--thinking-budget 32768` (Gemini; `-1` dynamic, `0` off)
+  * `--thinking-budget 32768` (Gemini 2.5; `-1` dynamic.)
+  * `--thinking-level high` (Gemini 3; Pro supports `low|high`, Flash supports `minimal|low|medium|high`)
 * **Ops**
 
   * `--dry-run`
