@@ -388,6 +388,24 @@ def write_json_atomic(path: Path, obj: Any) -> None:
     os.replace(tmp_path, path)
 
 
+def fix_github_markdown_codeblocks(text: str) -> str:
+    """Normalize indentation inside fenced code blocks for GitHub list rendering."""
+    fence_re = re.compile(r"^(\s*)```")
+    lines = text.splitlines(keepends=True)
+    if sum(1 for l in lines if fence_re.match(l)) % 2 != 0:
+        return text  # unbalanced fences, skip
+    result, in_block, indent = [], False, ""
+    for line in lines:
+        match = fence_re.match(line)
+        if match:
+            in_block = not in_block
+            indent = match.group(1) if in_block else ""
+            result.append(line)
+        else:
+            result.append(indent + line if in_block else line)
+    return "".join(result)
+
+
 def human_usd(x: float) -> str:
     return f"${x:,.4f}"
 
@@ -2013,7 +2031,7 @@ class Orchestrator:
             md_path = self.aggregate_md_path(fi)
             json_path = self.aggregate_json_path(fi)
             try:
-                write_text_atomic(md_path, result.text)
+                write_text_atomic(md_path, fix_github_markdown_codeblocks(result.text))
                 write_json_atomic(json_path, json_sidecar)
                 status_kwargs = {
                     "ended_at": now_ts(),
