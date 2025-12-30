@@ -237,6 +237,43 @@ AGGREGATION_PROMPT = textwrap.dedent(
     ```
     """).strip()
 
+AGGREGATION_PROMPT_NO_JSON = textwrap.dedent(
+    """
+    You are consolidating multiple independent static-analysis drafts into one final engineering review.
+    Objectives:
+    - Elevate unique or rare but critical findings that appear only in one draft.
+    - De-duplicate overlapping findings; cluster similar ones.
+    - Assign severity and confidence per consolidated finding.
+    - Mark likely false positives and note uncertainty clearly.
+    - Provide specific fixes and tests to validate behavior.
+    - Keep it focused and engineering-grade; avoid style-only nits.
+
+    Output strictly in the following sections and sequence.
+
+    REQUIRED MARKDOWN STRUCTURE:
+    # Final Review — {file_path}
+
+    ## Executive Summary
+    A compact summary of critical risks and overall quality.
+
+    ## Consolidated Findings
+    Grouped by severity. For each finding, include:
+    - ID: Fx
+    - Title
+    - Severity
+    - Confidence
+    - Evidence
+    - Why it's a bug
+    - Fix
+    - Tests
+
+    ## Model Disagreements or Uncertain Items
+    Note any items that were not consistent across drafts, and what to verify.
+
+    ## Recommendations
+    Prioritized next steps and suggested guardrails (assertions, fuzzing, sanitizers, CI checks).
+    """).strip()
+
 # ------------------------------- Dataclasses ----------------------------------
 
 
@@ -1394,10 +1431,11 @@ def build_analysis_prompts(file_path: Path, language: str, file_text: str, trial
     return CORE_ANALYSIS_DIRECTIVE, user_prompt
 
 
-def build_aggregation_prompts(file_path: Path, drafts: List[Tuple[str, str, int]], best_of: int) -> Tuple[str, str]:
+def build_aggregation_prompts(file_path: Path, drafts: List[Tuple[str, str, int]], best_of: int, no_json: bool = False) -> Tuple[str, str]:
     # Avoid Python str.format on AGGREGATION_PROMPT because it contains literal braces
     # for JSON examples. Just replace the {file_path} placeholder manually.
-    system_prompt = AGGREGATION_PROMPT.replace("{file_path}", sanitize_rel_path(file_path))
+    base_prompt = AGGREGATION_PROMPT_NO_JSON if no_json else AGGREGATION_PROMPT
+    system_prompt = base_prompt.replace("{file_path}", sanitize_rel_path(file_path))
     user_prompt = build_aggregation_prompt(file_path, drafts, best_of)
     return system_prompt, user_prompt
 
@@ -1534,12 +1572,13 @@ class Orchestrator:
         resume: bool = False,
         thinking_budget_override: Optional[int] = None,
         thinking_level_override: Optional[str] = None,
+        no_json: bool = False,
     ) -> None:
         try:
             if dry_run:
                 await self._run_dry(files, thinking_budget_override)
             else:
-                await self._run_real(files, resume, thinking_budget_override, thinking_level_override)
+                await self._run_real(files, resume, thinking_budget_override, thinking_level_override, no_json)
         except Exception as e:
             self.logger.error(f"Fatal error: {e}\n{traceback.format_exc()}")
             raise
@@ -1645,6 +1684,7 @@ class Orchestrator:
         resume: bool,
         thinking_budget_override: Optional[int],
         thinking_level_override: Optional[str],
+        no_json: bool = False,
     ) -> None:
         # Install signal handlers
         loop = asyncio.get_running_loop()
@@ -1733,7 +1773,7 @@ class Orchestrator:
                 self.logger.info(
                     f"Scheduling aggregation for {fi.rel_path} with aggregator='{agg_key}' and {len(drafts_meta)} scheduled drafts"
                 )
-                agg_future = asyncio.create_task(self._run_aggregate_when_ready(fi, file_id, drafts_meta, agg_key, raw_text))
+                agg_future = asyncio.create_task(self._run_aggregate_when_ready(fi, file_id, drafts_meta, agg_key, raw_text, no_json))
                 trial_tasks.append(agg_future)
 
         # Wait for all tasks
@@ -1870,6 +1910,7 @@ class Orchestrator:
         drafts_meta: List[Tuple[str, asyncio.Future, int]],
         aggregator_model_key: str,
         raw_text: str,
+        no_json: bool = False,
     ) -> None:
         # Wait for all trials for this file (including possibly from multiple models)
         # We collect drafts that succeeded; ignore failed/skipped
@@ -1904,7 +1945,7 @@ class Orchestrator:
 
         # Build aggregation prompt and perform preflight checks
         try:
-            system_prompt, user_prompt = build_aggregation_prompts(fi.path, collected, best_of=self.cfg.best_of)
+            system_prompt, user_prompt = build_aggregation_prompts(fi.path, collected, best_of=self.cfg.best_of, no_json=no_json)
             agg_prompt = combine_system_and_user(system_prompt, user_prompt)
             m = self.cfg.models[aggregator_model_key]
             client = self.model_clients[aggregator_model_key]
@@ -2016,8 +2057,13 @@ class Orchestrator:
 
         self._live_counters["completed_requests"] += 1
         if result.ok:
-            json_sidecar = self._extract_json_findings(result.text)
-            json_text = json.dumps(json_sidecar, indent=2)
+            # Extract and write JSON only if not disabled
+            if no_json:
+                json_sidecar = {}
+                json_text = ""
+            else:
+                json_sidecar = self._extract_json_findings(result.text)
+                json_text = json.dumps(json_sidecar, indent=2)
             self.db.append_aggregate_output(
                 aggr_id,
                 full_prompt,
@@ -2029,19 +2075,30 @@ class Orchestrator:
                 result.cost_usd,
             )
             md_path = self.aggregate_md_path(fi)
-            json_path = self.aggregate_json_path(fi)
             try:
                 write_text_atomic(md_path, fix_github_markdown_codeblocks(result.text))
-                write_json_atomic(json_path, json_sidecar)
-                status_kwargs = {
-                    "ended_at": now_ts(),
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "cached_input_tokens": result.cached_input_tokens,
-                    "cost_usd": result.cost_usd,
-                    "output_path": str(md_path),
-                    "json_path": str(json_path),
-                }
+                if no_json:
+                    status_kwargs = {
+                        "ended_at": now_ts(),
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                        "cached_input_tokens": result.cached_input_tokens,
+                        "cost_usd": result.cost_usd,
+                        "output_path": str(md_path),
+                        "json_path": None,
+                    }
+                else:
+                    json_path = self.aggregate_json_path(fi)
+                    write_json_atomic(json_path, json_sidecar)
+                    status_kwargs = {
+                        "ended_at": now_ts(),
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                        "cached_input_tokens": result.cached_input_tokens,
+                        "cost_usd": result.cost_usd,
+                        "output_path": str(md_path),
+                        "json_path": str(json_path),
+                    }
             except Exception as exc:
                 self.logger.error(f"Failed to write aggregate outputs for {fi.rel_path}: {exc}")
                 status_kwargs = {
@@ -2303,6 +2360,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", help=f"Output directory (default {DEFAULT_OUTPUT_DIR})")
     p.add_argument("--state-dir", help=f"State directory (default {DEFAULT_STATE_DIR})")
     p.add_argument("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+    p.add_argument("--no-json", action="store_true", help="Disable JSON generation in aggregated outputs (only produce Markdown)")
     return p
 
 
@@ -2418,6 +2476,7 @@ async def main_async(argv: Optional[List[str]] = None) -> int:
             resume=args.resume,
             thinking_budget_override=args.thinking_budget,
             thinking_level_override=args.thinking_level,
+            no_json=args.no_json,
         )
     finally:
         with contextlib.suppress(Exception):
