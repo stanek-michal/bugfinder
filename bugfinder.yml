@@ -28,7 +28,7 @@ models:
     # Gemini 3: prefer thinking_level. Gemini 3 Pro supports low|high.
     thinking_level: high
     use_count_tokens_in_dry_run: true
-    request_timeout_s: 240  # how long you expect LLM response to take
+    request_timeout_s: 400  # how long you expect LLM response to take
     # max_output_tokens: 1200 # uncomment to cap completions
   gemini_flash:
     provider: gemini
@@ -44,10 +44,10 @@ models:
       rpm: 5
     concurrency: 2
     # Gemini 3 Flash supports minimal|low|medium|high.
-    thinking_level: high
+    thinking_level: medium
     # If temperature_schedule is omitted, a default is used based on 'best_of'
     use_count_tokens_in_dry_run: true
-    request_timeout_s: 240
+    request_timeout_s: 400
     # max_output_tokens: 64000  # model max output; leaving unset keeps dry-run estimates realistic
   # gpt-oss:
   #   provider: openai_compat  # Use 'openai_compat' for OpenAI or compatible APIs
@@ -71,13 +71,13 @@ aggregator_model_key: gemini_flash
 
 include_globs:
   - "**/*.c"
-  - "**/*.h"
+#  - "**/*.h"
   - "**/*.cc"
   - "**/*.cpp"
   - "**/*.cxx"
-  - "**/*.hh"
-  - "**/*.hpp"
-  - "**/*.hxx"
+#  - "**/*.hh"
+#  - "**/*.hpp"
+#  - "**/*.hxx"
 
 exclude_globs:
   - ".git/**"
