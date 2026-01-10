@@ -484,6 +484,7 @@ def _is_rate_limited(err: Exception) -> bool:
     if RateLimitError is not None and isinstance(err, RateLimitError):
         return True
     msg = str(err)
+#    print(f"Rate limited error: {msg}")
     if "429" in msg or "rate limit" in msg.lower() or "TooManyRequests" in msg:
         return True
     # Bedrock sometimes returns 500 with throttling messages
@@ -644,11 +645,8 @@ class TokenEstimator:
         if client is None:
             return None
         try:
-            loop = asyncio.get_running_loop()
-            # google-genai client is sync; run in thread
-            def _count():
-                return client.models.count_tokens(model=self.model_cfg.model_name, contents=text)
-            resp = await loop.run_in_executor(None, _count)
+            # Use native async client
+            resp = await client.aio.models.count_tokens(model=self.model_cfg.model_name, contents=text)
             if hasattr(resp, "total_tokens"):
                 return int(resp.total_tokens)
         except Exception:
@@ -848,19 +846,18 @@ class GeminiClient(BaseLLMClient):
             cfg_kwargs["system_instruction"] = system_prompt
         gen_cfg = google_types.GenerateContentConfig(**cfg_kwargs)
 
-        # The SDK is synchronous; run in a thread with timeout + retries
-        def _call():
-            return self.client.models.generate_content(
-                model=self.cfg.model_name,
-                contents=user_prompt,
-                config=gen_cfg,
-            )
-
+        # Use native async client for proper cancellation on timeout
         max_retries = 8
         for attempt in range(1, max_retries + 1):
             try:
-                loop = asyncio.get_running_loop()
-                resp = await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=timeout_s)
+                resp = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.cfg.model_name,
+                        contents=user_prompt,
+                        config=gen_cfg,
+                    ),
+                    timeout=timeout_s,
+                )
                 text = getattr(resp, "text", "") or ""
                 usage = getattr(resp, "usage_metadata", None)
                 in_tok = 0
@@ -904,6 +901,12 @@ class GeminiClient(BaseLLMClient):
                 continue
             self.logger.error(f"[{self.cfg.key}] generate final failure: {err}")
             return TrialResult(ok=False, text="", input_tokens=0, output_tokens=0, cached_input_tokens=0, cost_usd=0.0, error=err)
+
+    async def close(self) -> None:
+        try:
+            await self.client.aio.aclose()
+        except Exception:
+            pass
 
 
 # ------------------------------- SQLite State ---------------------------------
@@ -1609,16 +1612,12 @@ class Orchestrator:
                 # Build representative prompt (trial_index placeholders not relevant for tokens)
                 system_prompt, user_prompt = build_analysis_prompts(fi.path, fi.language, text, trial_index=1, best_of=self.cfg.best_of)
                 prompt_for_est = combine_system_and_user(system_prompt, user_prompt)
-                # Try gemini count_tokens if allowed
-                gem_client = None
-                if m.provider == "gemini" and m.use_count_tokens_in_dry_run and google_genai is not None:
-                    try:
-                        gem_client = google_genai.Client(api_key=os.getenv(m.api_key_env) or os.getenv("GEMINI_API_KEY"))
-                    except Exception:
-                        gem_client = None
+                # Try gemini count_tokens if allowed (reuse existing client)
                 in_tokens_est = None
-                if gem_client:
-                    in_tokens_est = await estimator.count_gemini_tokens(gem_client, prompt_for_est, is_dry_run=True)
+                if m.provider == "gemini" and m.use_count_tokens_in_dry_run:
+                    client_wrapper = self.model_clients.get(mk)
+                    if client_wrapper and hasattr(client_wrapper, "client"):
+                        in_tokens_est = await estimator.count_gemini_tokens(client_wrapper.client, prompt_for_est, is_dry_run=True)
                 if in_tokens_est is None:
                     in_tokens_est = estimator.estimate(prompt_for_est)
                 # Output tokens estimate heuristic: enforce cap if configured; else provider-specific default
