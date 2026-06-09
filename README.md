@@ -1,4 +1,46 @@
-# Bug Finder — Multi-LLM Static Analysis for Existing Codebases
+# Bug Finder
+
+## v2 (Recommended) — Agent-based
+
+`bug_finder_v2_agent.py` loops over source files in a folder and runs an agent CLI per file to find real, impactful defects. Sequential by design — intended for overnight runs.
+
+The agent command defaults to `claude` (Claude Code CLI) but can be changed to `agent` (Cursor) or any compatible CLI by editing `AGENT_CMD` at the top of `bug_finder_v2_agent.py`.
+
+### Quickstart
+
+```bash
+# Run from the repo root; reports land in BUGFINDER_REPORTS/
+./bug_finder_v2_agent.py path/to/code
+
+# Provide an explicit file list instead of discovery
+./bug_finder_v2_agent.py path/to/code --file-list files.txt
+
+# Custom model or timeout
+./bug_finder_v2_agent.py path/to/code --model claude-opus-4-8 --timeout-s 900
+```
+
+**Requirements:** the agent CLI (`claude`, `agent`, or whatever `AGENT_CMD` is set to) must be on `PATH`.
+
+**Outputs:** one Markdown report per file under `BUGFINDER_REPORTS/<mirrored_rel_path>.md`.
+
+### CLI flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `folder` | _(required)_ | Folder to scan (relative to repo root) |
+| `--model` | `gpt-5.2-high` | Model name passed to the agent |
+| `--timeout-s` | `600` | Per-file agent timeout in seconds |
+| `--output-dir` | `BUGFINDER_REPORTS` | Output directory for reports |
+| `--include-glob` | C/C++ sources | Include glob (repeatable); overrides defaults |
+| `--exclude-glob` | build/vendor/… | Exclude glob (repeatable); overrides defaults |
+| `--file-list` | — | Text file with one repo-relative path per line; skips discovery |
+| `--follow-symlinks` / `--no-follow-symlinks` | follow | Symlink traversal |
+
+---
+
+---
+
+# Legacy — v1 (Multi-LLM Static Analysis)
 
 `bug_finder.py` scans existing source files with two LLM backends (Gemini + an OpenAI-compatible endpoint) and merges their findings into one ranked report. Fast to start, highly configurable, with precise **token/cost** tracking.
 
